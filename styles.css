@@ -147,7 +147,7 @@ p{
    7. PAGE SECTIONS — show/hide via JS
 ────────────────────────────────────────────────────────── */
 .page {
-  display: block; /* hidden by default */
+  display: none; /* hidden by default */
 }
  
 .page.active {

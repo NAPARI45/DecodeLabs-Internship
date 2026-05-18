@@ -1,564 +1,498 @@
 /* ============================================================
-   LUNA — CYCLE TRACKER  |  script.js
-   All JavaScript logic: data, navigation, calendar, predictions
-   ============================================================ */
+  All data now comes from your Express backend API
+   instead of localStorage. We use fetch() to talk to it
+   */
 
+const API = 'http://localhost:3000';
 
-/* ──────────────────────────────────────────────────────────
-   1. DATA MANAGEMENT
-   We store all data in localStorage so it survives page refreshes.
-   getData() reads from storage, saveData() writes to it.
-────────────────────────────────────────────────────────── */
-
-function getData() {
-  const stored = localStorage.getItem('luna_data');
-  if (stored) {
-    return JSON.parse(stored); // parse the saved JSON string back into an object
+/* fetchAllCycles()
+   Calls GET /cycles and returns the array of cycles.
+   Used by: History page, cycle calculations.
+────────────────────────────────────────────────────────────── */
+async function fetchAllCycles() {
+  try {
+    const response = await fetch(`${API}/cycles`);
+    const data     = await response.json();
+    return data.cycles || [];
+  } catch (err) {
+    console.error('Could not reach API:', err);
+    return [];
   }
-  // Default structure if nothing is saved yet
-  return {
-    cycles: [],
-    settings: {
-      cycleLength: 28,   // average cycle length in days
-      periodLength: 5    // average period duration in days
-    }
-  };
 }
 
-function saveData(data) {
-  localStorage.setItem('luna_data', JSON.stringify(data));
+/* fetchLatestCycle()
+   Calls GET /cycles/latest and returns the most recent cycle.
+   Used by: Dashboard predictions.
+────────────────────────────────────────────────────────────── */
+async function fetchLatestCycle() {
+  try {
+    const response = await fetch(`${API}/cycles/latest`);
+    if (response.status === 404) return null;
+    const data = await response.json();
+    return data.cycle || null;
+  } catch (err) {
+    console.error('Could not reach API:', err);
+    return null;
+  }
 }
+ 
 
 
+/* postCycle(entry)
+   Calls POST /cycles with the cycle data from the Log form.
+   Returns { success, message, cycle } from the server.
+────────────────────────────────────────────────────────────── */
+async function postCycle(entry) {
+  try {
+    const response = await fetch(`${API}/cycles`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(entry)
+    });
+    const data = await response.json();
+    return data;
+  } catch (err) {
+    console.error('Could not save cycle:', err);
+    return { success: false, message: 'Server unreachable' };
+  }
+}
+ 
+/* deleteCycle(id)
+   Calls DELETE /cycles/:id.
+────────────────────────────────────────────────────────────── */
+async function deleteCycle(id) {
+  try {
+    const response = await fetch(`${API}/cycles/${id}`, {
+      method: 'DELETE'
+    });
+    const data = await response.json();
+    return data;
+  } catch (err) {
+    console.error('Could not delete cycle:', err);
+    return { success: false };
+  }
+}
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   2. NAVIGATION
-   showSection() hides all pages and shows just the one you want.
-   It also updates the active state on all nav buttons.
-────────────────────────────────────────────────────────── */
-
+   2. SETTINGS
+   Settings stay in localStorage — they are personal
+   display preferences, not data that needs a server.
+────────────────────────────────────────────────────────────── */
+ 
+function getSettings() {
+  const stored = localStorage.getItem('luna_settings');
+  return stored
+    ? JSON.parse(stored)
+    : { cycleLength: 28, periodLength: 5 };
+}
+ 
+function saveSettings(settings) {
+  localStorage.setItem('luna_settings', JSON.stringify(settings));
+}
+ 
+ 
+/* ──────────────────────────────────────────────────────────
+   3. NAVIGATION
+────────────────────────────────────────────────────────────── */
+ 
 function showSection(sectionId) {
-  // Hide all pages
   document.querySelectorAll('.page').forEach(page => {
     page.classList.remove('active');
   });
-
-  // Show the chosen page
   document.getElementById(sectionId).classList.add('active');
-
-  // Update bottom nav buttons
+ 
   document.querySelectorAll('.bnav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.section === sectionId);
   });
-
-  // Update sidebar nav buttons
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.section === sectionId);
   });
-
-  // Refresh the page content when navigating to it
+ 
   if (sectionId === 'dashboard') renderDashboard();
   if (sectionId === 'calendar')  renderCalendar();
   if (sectionId === 'history')   renderHistory();
 }
-
-// Attach click events to all navigation buttons
+ 
 document.querySelectorAll('[data-section]').forEach(btn => {
   btn.addEventListener('click', () => showSection(btn.dataset.section));
 });
-
-
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   3. CYCLE CALCULATIONS
-   Helper functions that calculate dates and cycle info.
-────────────────────────────────────────────────────────── */
-
-// Returns the most recently logged cycle, or null if none
-function getLastCycle() {
-  const data = getData();
-  if (data.cycles.length === 0) return null;
-  return data.cycles[data.cycles.length - 1];
+   4. CYCLE CALCULATIONS
+   These now receive cycle data as a parameter instead of
+   reading from localStorage directly.
+────────────────────────────────────────────────────────────── */
+ 
+function predictNextPeriod(lastCycle) {
+  if (!lastCycle) return null;
+  const settings = getSettings();
+  const start = new Date(lastCycle.startDate);
+  start.setDate(start.getDate() + settings.cycleLength);
+  return start;
 }
-
-// Predicts the start date of the next period
-function predictNextPeriod() {
-  const data = getData();
-  const last = getLastCycle();
-  if (!last) return null;
-
-  const lastStart = new Date(last.startDate);
-  lastStart.setDate(lastStart.getDate() + data.settings.cycleLength);
-  return lastStart;
-}
-
-// Predicts ovulation date (typically 14 days before the next period)
-function predictOvulation() {
-  const nextPeriod = predictNextPeriod();
+ 
+function predictOvulation(lastCycle) {
+  const nextPeriod = predictNextPeriod(lastCycle);
   if (!nextPeriod) return null;
-
-  const ovulation = new Date(nextPeriod);
-  ovulation.setDate(ovulation.getDate() - 14);
-  return ovulation;
+  const ov = new Date(nextPeriod);
+  ov.setDate(ov.getDate() - 14);
+  return ov;
 }
-
-// Returns how many days into the current cycle the user is
-function getCurrentCycleDay() {
-  const last = getLastCycle();
-  if (!last) return null;
-
-  const start = new Date(last.startDate);
+ 
+function getCurrentCycleDay(lastCycle) {
+  if (!lastCycle) return null;
+  const start = new Date(lastCycle.startDate);
   const today = new Date();
-  // Floor to whole days, +1 because day 1 is the start date itself
-  const diff = Math.floor((today - start) / (1000 * 60 * 60 * 24)) + 1;
+  const diff  = Math.floor((today - start) / (1000 * 60 * 60 * 24)) + 1;
   return diff > 0 ? diff : 1;
 }
-
-// Returns the phase name based on cycle day
-function getCurrentPhase() {
-  const data = getData();
-  const day = getCurrentCycleDay();
+ 
+function getCurrentPhase(lastCycle) {
+  const settings = getSettings();
+  const day      = getCurrentCycleDay(lastCycle);
   if (!day) return null;
-
-  const pLen = data.settings.periodLength;
-
-  if (day <= pLen)  return 'Menstrual';
-  if (day <= 13)    return 'Follicular';
-  if (day === 14)   return 'Ovulation';
-  if (day <= 28)    return 'Luteal';
+  if (day <= settings.periodLength) return 'Menstrual';
+  if (day <= 13)  return 'Follicular';
+  if (day === 14) return 'Ovulation';
+  if (day <= 28)  return 'Luteal';
   return 'Late Luteal';
 }
-
-// Calculates average cycle length across logged cycles
-function getAvgCycleLength() {
-  const data = getData();
-  if (data.cycles.length < 2) return data.settings.cycleLength;
-
-  let total = 0;
-  let count = 0;
-  for (let i = 1; i < data.cycles.length; i++) {
-    const prev = new Date(data.cycles[i - 1].startDate);
-    const curr = new Date(data.cycles[i].startDate);
-    const diff = Math.round((curr - prev) / (1000 * 60 * 60 * 24));
-    // Only count reasonable lengths (avoids bad data)
-    if (diff > 15 && diff < 50) {
-      total += diff;
-      count++;
-    }
-  }
-  return count > 0 ? Math.round(total / count) : data.settings.cycleLength;
-}
-
-// Calculates average period length across logged cycles that have end dates
-function getAvgPeriodLength() {
-  const data = getData();
-  const withEndDate = data.cycles.filter(c => c.endDate);
-  if (withEndDate.length === 0) return data.settings.periodLength;
-
-  const total = withEndDate.reduce((sum, c) => {
-    const start = new Date(c.startDate);
-    const end   = new Date(c.endDate);
-    return sum + Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1;
-  }, 0);
-
-  return Math.round(total / withEndDate.length);
-}
-
-// Formats a Date object into a human-readable short string (e.g. "15 Jun")
+ 
 function formatDate(date) {
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
-
-// Formats a Date into "15 June 2026"
+ 
 function formatDateLong(date) {
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 }
-
-// Returns "YYYY-MM-DD" string for a Date object (for comparisons)
+ 
 function toISODay(date) {
   return date.toISOString().split('T')[0];
 }
-
-
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   4. DASHBOARD — render cycle day ring, predictions, tip
-────────────────────────────────────────────────────────── */
-
-function renderDashboard() {
-  // ── Greeting based on time of day ──
+   5. DASHBOARD
+   Now async — fetches the latest cycle from the API first.
+────────────────────────────────────────────────────────────── */
+ 
+async function renderDashboard() {
   const hour = new Date().getHours();
   const greetingEl = document.getElementById('greeting');
   if (hour < 12)      greetingEl.textContent = 'Good morning 🌸';
   else if (hour < 18) greetingEl.textContent = 'Good afternoon 🌼';
   else                greetingEl.textContent = 'Good evening 🌙';
-
-  const data = getData();
-  const day  = getCurrentCycleDay();
-  const phase = getCurrentPhase();
-
-  // ── Cycle ring ──
-  const ringDayEl  = document.getElementById('ringDay');
+ 
+  const lastCycle = await fetchLatestCycle();
+  const settings  = getSettings();
+  const day       = getCurrentCycleDay(lastCycle);
+  const phase     = getCurrentPhase(lastCycle);
+ 
+  const ringDayEl   = document.getElementById('ringDay');
   const cycleRingEl = document.getElementById('cycleRing');
-
+ 
   if (day) {
     ringDayEl.textContent = day;
-    // Calculate percentage through cycle for the conic-gradient arc
-    const pct = Math.min((day / data.settings.cycleLength) * 100, 100);
+    const pct = Math.min((day / settings.cycleLength) * 100, 100);
     cycleRingEl.style.background =
       `conic-gradient(var(--rose) ${pct}%, var(--rose-light) ${pct}%)`;
   } else {
     ringDayEl.textContent = '—';
   }
-
-  // ── Next period prediction ──
-  const nextPeriod = predictNextPeriod();
+ 
+  const nextPeriod   = predictNextPeriod(lastCycle);
   const nextPeriodEl = document.getElementById('nextPeriodVal');
   if (nextPeriod) {
     const daysUntil = Math.round((nextPeriod - new Date()) / (1000 * 60 * 60 * 24));
-    if (daysUntil <= 0) {
-      nextPeriodEl.textContent = 'Due now';
-    } else if (daysUntil === 1) {
-      nextPeriodEl.textContent = 'Tomorrow';
-    } else {
-      nextPeriodEl.textContent = `In ${daysUntil} days`;
-    }
+    if      (daysUntil <= 0)  nextPeriodEl.textContent = 'Due now';
+    else if (daysUntil === 1) nextPeriodEl.textContent = 'Tomorrow';
+    else                      nextPeriodEl.textContent = `In ${daysUntil} days`;
   } else {
     nextPeriodEl.textContent = '—';
   }
-
-  // ── Ovulation prediction ──
-  const ovulation = predictOvulation();
-  const ovEl = document.getElementById('ovulationVal');
-  ovEl.textContent = ovulation ? formatDate(ovulation) : '—';
-
-  // ── Current phase ──
+ 
+  const ovulation = predictOvulation(lastCycle);
+  document.getElementById('ovulationVal').textContent =
+    ovulation ? formatDate(ovulation) : '—';
+ 
   document.getElementById('phaseVal').textContent = phase || '—';
-
-  // ── Phase tips ──
+ 
   const tips = {
-    'Menstrual':   '🌺 Rest when you can. Your body is working hard — it\'s okay to slow down.',
-    'Follicular':  '🌱 Energy is rising! A great time to start new things and get creative.',
-    'Ovulation':   '✨ You\'re at your most energetic and social. Embrace it!',
-    'Luteal':      '🌙 Wind down gradually and practise self-care this week.',
-    'Late Luteal': '🫖 PMS symptoms may appear. Be extra kind to yourself today.'
+    'Menstrual':   '🌺 Rest when you can. Your body is working hard.',
+    'Follicular':  '🌱 Energy is rising! Great time to start something new.',
+    'Ovulation':   '✨ You\'re at your most energetic today.',
+    'Luteal':      '🌙 Wind down and practise self-care this week.',
+    'Late Luteal': '🫖 Be extra kind to yourself today.'
   };
-  const tipEl = document.getElementById('tipCard');
-  tipEl.innerHTML = `<p>${tips[phase] || 'Log your first period to start seeing your cycle insights. 🌸'}</p>`;
+  document.getElementById('tipCard').innerHTML =
+    `<p>${tips[phase] || 'Log your first period to start seeing insights. 🌸'}</p>`;
 }
-
-
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   5. CALENDAR — renders a month grid with cycle markers
-────────────────────────────────────────────────────────── */
-
-// Track which month is currently displayed
+   6. CALENDAR
+────────────────────────────────────────────────────────────── */
+ 
 let calMonth = new Date().getMonth();
 let calYear  = new Date().getFullYear();
-
-function renderCalendar() {
-  const data = getData();
-  const grid = document.getElementById('calendarGrid');
+ 
+async function renderCalendar() {
+  const settings   = getSettings();
+  const grid       = document.getElementById('calendarGrid');
   const monthLabel = document.getElementById('calMonthYear');
-
   const monthNames = [
     'January','February','March','April','May','June',
     'July','August','September','October','November','December'
   ];
-
+ 
   monthLabel.textContent = `${monthNames[calMonth]} ${calYear}`;
-  grid.innerHTML = ''; // clear previous calendar
-
-  // ── Day headers (Su Mo Tu...) ──
+  grid.innerHTML = '';
+ 
+  const cycles    = await fetchAllCycles();
+  const lastCycle = cycles.length > 0 ? cycles[0] : null;
+ 
   ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(day => {
     const el = document.createElement('div');
-    el.className = 'cal-day-header';
+    el.className   = 'cal-day-header';
     el.textContent = day;
     grid.appendChild(el);
   });
-
-  // ── Build sets of special dates ──
-
-  // Past period days (from logged cycles)
+ 
   const periodDays = new Set();
-  data.cycles.forEach(cycle => {
+  cycles.forEach(cycle => {
     if (!cycle.startDate) return;
     const start = new Date(cycle.startDate);
     const end   = cycle.endDate
       ? new Date(cycle.endDate)
-      : new Date(start.getTime() + (data.settings.periodLength - 1) * 86400000);
-
+      : new Date(start.getTime() + (settings.periodLength - 1) * 86400000);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       periodDays.add(toISODay(new Date(d)));
     }
   });
-
-  // Predicted future period, fertile window, and ovulation
-  const predictedPeriodDays  = new Set();
-  const fertileDays          = new Set();
-  let   ovulationDay         = null;
-
-  const nextPeriod = predictNextPeriod();
+ 
+  const predictedPeriodDays = new Set();
+  const fertileDays         = new Set();
+  let   ovulationDay        = null;
+ 
+  const nextPeriod = predictNextPeriod(lastCycle);
   if (nextPeriod) {
-    // Predicted period days
-    for (let i = 0; i < data.settings.periodLength; i++) {
+    for (let i = 0; i < settings.periodLength; i++) {
       const d = new Date(nextPeriod);
       d.setDate(d.getDate() + i);
       predictedPeriodDays.add(toISODay(d));
     }
-
-    // Ovulation day (14 days before next period)
     const ov = new Date(nextPeriod);
     ov.setDate(ov.getDate() - 14);
     ovulationDay = toISODay(ov);
-
-    // Fertile window: 5 days before ovulation
     for (let i = -5; i < 0; i++) {
       const d = new Date(ov);
       d.setDate(d.getDate() + i);
       fertileDays.add(toISODay(d));
     }
   }
-
-  // ── Empty cells before the 1st of the month ──
-  const firstDayOfMonth = new Date(calYear, calMonth, 1).getDay();
-  for (let i = 0; i < firstDayOfMonth; i++) {
+ 
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  for (let i = 0; i < firstDay; i++) {
     const empty = document.createElement('div');
     empty.className = 'cal-day empty';
     grid.appendChild(empty);
   }
-
-  // ── Day cells ──
+ 
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
   const todayStr    = toISODay(new Date());
-
+ 
   for (let day = 1; day <= daysInMonth; day++) {
-    const month  = String(calMonth + 1).padStart(2, '0');
-    const dayStr = String(day).padStart(2, '0');
+    const month   = String(calMonth + 1).padStart(2, '0');
+    const dayStr  = String(day).padStart(2, '0');
     const dateStr = `${calYear}-${month}-${dayStr}`;
-
+ 
     const el = document.createElement('div');
-    el.className = 'cal-day';
+    el.className   = 'cal-day';
     el.textContent = day;
-
-    // Apply colour classes based on what type of day this is
+ 
     if      (periodDays.has(dateStr))          el.classList.add('period-day');
     else if (dateStr === ovulationDay)          el.classList.add('ovulation-day');
     else if (fertileDays.has(dateStr))         el.classList.add('fertile-day');
     else if (predictedPeriodDays.has(dateStr)) el.classList.add('predicted-day');
-
-    // Highlight today
+ 
     if (dateStr === todayStr) el.classList.add('today');
-
     grid.appendChild(el);
   }
 }
-
-// Month navigation buttons
+ 
 document.getElementById('prevMonth').addEventListener('click', () => {
   calMonth--;
   if (calMonth < 0) { calMonth = 11; calYear--; }
   renderCalendar();
 });
-
+ 
 document.getElementById('nextMonth').addEventListener('click', () => {
   calMonth++;
   if (calMonth > 11) { calMonth = 0; calYear++; }
   renderCalendar();
 });
-
-
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   6. LOG — handle pill selection and save form
-────────────────────────────────────────────────────────── */
-
-// Set default start date to today
+   7. LOG FORM
+────────────────────────────────────────────────────────────── */
+ 
 document.getElementById('startDate').value = toISODay(new Date());
-
-// Pill button toggle logic — only one pill can be selected per group
+ 
 document.querySelectorAll('.pill-group').forEach(group => {
   group.querySelectorAll('.pill').forEach(pill => {
     pill.addEventListener('click', () => {
-      // Deselect all pills in this group
       group.querySelectorAll('.pill').forEach(p => p.classList.remove('selected'));
-      // Select the clicked pill
       pill.classList.add('selected');
     });
   });
 });
-
-// Save log button
-document.getElementById('saveLogBtn').addEventListener('click', () => {
+ 
+document.getElementById('saveLogBtn').addEventListener('click', async () => {
   const startDate = document.getElementById('startDate').value;
-
-  // Validation: start date is required
+ 
   if (!startDate) {
-    showSaveMsg('⚠️ Please enter a start date.', 'error');
+    showSaveMsg('⚠️ Please enter a start date.');
     return;
   }
-
-  // Gather all form values
-  const endDate = document.getElementById('endDate').value || null;
-  const flow    = document.querySelector('#flowGroup .pill.selected')?.dataset.value   || null;
-  const cramps  = document.querySelector('#crampsGroup .pill.selected')?.dataset.value || null;
-  const mood    = document.querySelector('#moodGroup .pill.selected')?.dataset.value   || null;
-  const notes   = document.getElementById('notes').value.trim();
-
-  // Build the cycle entry object
-  const entry = { startDate, endDate, flow, cramps, mood, notes };
-
-  // Load existing data, add/update the entry, and save
-  const data = getData();
-  const existingIndex = data.cycles.findIndex(c => c.startDate === startDate);
-
-  if (existingIndex >= 0) {
-    // Update existing entry with same start date
-    data.cycles[existingIndex] = entry;
+ 
+  const entry = {
+    startDate,
+    endDate: document.getElementById('endDate').value   || null,
+    flow:    document.querySelector('#flowGroup .pill.selected')?.dataset.value   || null,
+    cramps:  document.querySelector('#crampsGroup .pill.selected')?.dataset.value || null,
+    mood:    document.querySelector('#moodGroup .pill.selected')?.dataset.value   || null,
+    notes:   document.getElementById('notes').value.trim()
+  };
+ 
+  // Disable button while the request is in flight
+  const btn = document.getElementById('saveLogBtn');
+  btn.textContent = 'Saving...';
+  btn.disabled    = true;
+ 
+  const result = await postCycle(entry);
+ 
+  btn.textContent = 'Save Log';
+  btn.disabled    = false;
+ 
+  if (result.success) {
+    showSaveMsg('✅ Saved! Your cycle has been logged.');
+    renderDashboard();
   } else {
-    // Add new entry and keep cycles sorted by date
-    data.cycles.push(entry);
-    data.cycles.sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
+    const errorMsg = result.errors ? result.errors.join(', ') : result.message;
+    showSaveMsg(`⚠️ ${errorMsg}`);
   }
-
-  saveData(data);
-  showSaveMsg('✅ Saved! Your cycle has been logged.');
-
-  // Refresh dashboard in background
-  renderDashboard();
 });
-
-// Helper to display a save confirmation message
+ 
 function showSaveMsg(msg) {
   const el = document.getElementById('saveMsg');
   el.textContent = msg;
-  // Clear the message after 3 seconds
   setTimeout(() => { el.textContent = ''; }, 3000);
 }
-
-
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   7. HISTORY — render stats and list of past cycles
-────────────────────────────────────────────────────────── */
-
-function renderHistory() {
-  const data   = getData();
-  const cycles = [...data.cycles].reverse(); // most recent first
-
-  // ── Stats ──
-  document.getElementById('statCycles').textContent = data.cycles.length;
-
-  // Average cycle length (needs at least 2 cycles to calculate)
-  if (data.cycles.length >= 2) {
-    document.getElementById('statAvgCycle').textContent = getAvgCycleLength() + 'd';
+   8. HISTORY
+────────────────────────────────────────────────────────────── */
+ 
+async function renderHistory() {
+  const cycles = await fetchAllCycles();
+ 
+  document.getElementById('statCycles').textContent = cycles.length;
+ 
+  if (cycles.length >= 2) {
+    let total = 0, count = 0;
+    const sorted = [...cycles].reverse();
+    for (let i = 1; i < sorted.length; i++) {
+      const diff = Math.round(
+        (new Date(sorted[i].startDate) - new Date(sorted[i-1].startDate))
+        / (1000 * 60 * 60 * 24)
+      );
+      if (diff > 15 && diff < 50) { total += diff; count++; }
+    }
+    document.getElementById('statAvgCycle').textContent =
+      count > 0 ? Math.round(total / count) + 'd' : '—';
   } else {
     document.getElementById('statAvgCycle').textContent = '—';
   }
-
-  // Average period length (needs at least 1 cycle with an end date)
-  const withEnd = data.cycles.filter(c => c.endDate);
+ 
+  const withEnd = cycles.filter(c => c.endDate);
   if (withEnd.length >= 1) {
-    document.getElementById('statAvgPeriod').textContent = getAvgPeriodLength() + 'd';
+    const total = withEnd.reduce((sum, c) => {
+      return sum + Math.round(
+        (new Date(c.endDate) - new Date(c.startDate)) / (1000 * 60 * 60 * 24)
+      ) + 1;
+    }, 0);
+    document.getElementById('statAvgPeriod').textContent =
+      Math.round(total / withEnd.length) + 'd';
   } else {
     document.getElementById('statAvgPeriod').textContent = '—';
   }
-
-  // ── Cycle list ──
+ 
   const listEl = document.getElementById('cycleList');
-
+ 
   if (cycles.length === 0) {
-    listEl.innerHTML = '<p class="empty-msg">No cycles logged yet. Head to Log to get started! 🌸</p>';
+    listEl.innerHTML =
+      '<p class="empty-msg">No cycles logged yet. Head to Log to get started! 🌸</p>';
     return;
   }
-
-  // Build HTML for each cycle entry
+ 
   listEl.innerHTML = cycles.map(cycle => {
-    const start   = new Date(cycle.startDate);
-    const dateStr = formatDateLong(start);
-
-    // Calculate period duration if end date is available
-    let durationStr = 'Ongoing';
+    const start       = new Date(cycle.startDate);
+    const dateStr     = formatDateLong(start);
+    let   durationStr = 'Ongoing';
+ 
     if (cycle.endDate) {
-      const end  = new Date(cycle.endDate);
-      const days = Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1;
+      const days = Math.round(
+        (new Date(cycle.endDate) - start) / (1000 * 60 * 60 * 24)
+      ) + 1;
       durationStr = `${days} day period`;
     }
-
-    // Build symptom chips
+ 
     let chips = '';
-    if (cycle.flow)                        chips += `<span class="chip chip-flow">Flow: ${cycle.flow}</span>`;
+    if (cycle.flow)                              chips += `<span class="chip chip-flow">Flow: ${cycle.flow}</span>`;
     if (cycle.cramps && cycle.cramps !== 'none') chips += `<span class="chip chip-cramps">Cramps: ${cycle.cramps}</span>`;
-    if (cycle.mood)                        chips += `<span class="chip chip-mood">${cycle.mood}</span>`;
-
-    // Notes (if any)
-    const notesHtml = cycle.notes
-      ? `<p class="cycle-notes">"${cycle.notes}"</p>`
-      : '';
-
+    if (cycle.mood)                              chips += `<span class="chip chip-mood">${cycle.mood}</span>`;
+ 
     return `
-      <div class="cycle-entry">
+      <div class="cycle-entry" id="entry-${cycle.id}">
         <div class="cycle-entry-top">
           <span class="cycle-entry-date">🌺 ${dateStr}</span>
           <span class="cycle-entry-dur">${durationStr}</span>
         </div>
         ${chips ? `<div class="chip-row">${chips}</div>` : ''}
-        ${notesHtml}
+        ${cycle.notes ? `<p class="cycle-notes">"${cycle.notes}"</p>` : ''}
+        <button
+          class="delete-btn"
+          onclick="handleDelete(${cycle.id})"
+          style="margin-top:8px; background:none; border:1px solid var(--rose);
+                 color:var(--rose); border-radius:8px; padding:4px 12px;
+                 font-size:0.78rem; cursor:pointer;">
+          Remove
+        </button>
       </div>
     `;
   }).join('');
 }
-
-
-/* ──────────────────────────────────────────────────────────
-   8. SETTINGS MODAL
-────────────────────────────────────────────────────────── */
-
-// Open modal and pre-fill with saved settings
-document.getElementById('settingsBtn').addEventListener('click', () => {
-  const data = getData();
-  document.getElementById('cycleLen').value  = data.settings.cycleLength;
-  document.getElementById('periodLen').value = data.settings.periodLength;
-  document.getElementById('settingsModal').classList.add('open');
-});
-
-// Close modal
-document.getElementById('closeSettings').addEventListener('click', () => {
-  document.getElementById('settingsModal').classList.remove('open');
-});
-
-// Close modal if user clicks the dark overlay behind it
-document.getElementById('settingsModal').addEventListener('click', function(e) {
-  if (e.target === this) this.classList.remove('open');
-});
-
-// Save settings
-document.getElementById('saveSettingsBtn').addEventListener('click', () => {
-  const data = getData();
-  const newCycleLen  = parseInt(document.getElementById('cycleLen').value);
-  const newPeriodLen = parseInt(document.getElementById('periodLen').value);
-
-  // Basic validation
-  if (newCycleLen < 20 || newCycleLen > 45) {
-    alert('Cycle length must be between 20 and 45 days.');
-    return;
+ 
+async function handleDelete(id) {
+  const result = await deleteCycle(id);
+  if (result.success) {
+    const el = document.getElementById(`entry-${id}`);
+    if (el) el.remove();
+    renderHistory();
+    renderDashboard();
   }
-  if (newPeriodLen < 2 || newPeriodLen > 10) {
-    alert('Period length must be between 2 and 10 days.');
-    return;
-  }
+}
+ 
+ 
 
-  data.settings.cycleLength  = newCycleLen;
-  data.settings.periodLength = newPeriodLen;
-  saveData(data);
-
-  document.getElementById('settingsModal').classList.remove('open');
-
-  // Re-render everything with updated settings
-  renderDashboard();
-  renderCalendar();
-});
-
-
+ 
+ 
 /* ──────────────────────────────────────────────────────────
-   9. INITIALISE THE APP
-   This runs once when the page loads.
-────────────────────────────────────────────────────────── */
-
-renderDashboard(); // show dashboard content on load
-renderCalendar();  // pre-render calendar in background
+   10. INITIALISE
+────────────────────────────────────────────────────────────── */
+renderDashboard();
+renderCalendar();
