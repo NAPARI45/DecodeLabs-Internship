@@ -1,205 +1,216 @@
 const express = require('express');
 const router  = express.Router();
+const Cycle   = require('../models/Cycle');
 
-let cycles =[];
-let nextId = 1;
-
-function validateCycle(data) {
-    const errors = [];
-
-    if (!data.startDate) {
-        errors.push('Start date is required');
-    }
-
-
-    if(data.startDate && isNaN(new Date(data.startDate).getTime())) {
-        errors.push('Start date must be a valid date (e.g. 2026-05-01)');
-    }
-
-    if (!data.endDate && isNaN(new Date(data.endDate).getTime())) {
-        errors.push('End date must be a valid date if provided');
-    }
-
-    if (data.startDate && data.endDate) {
-        const start = new Date(data.startDate);
-        const end = new Date(data.endDate);
-        if (end < start) {
-            errors.push('End date cannot be before start date');
-        }
-    }
-
-    const validFlow = ['spotting', 'light', 'medium', 'heavy'];
-    if (data.flow && !validFlow.includes(data.flow)) {
-        errors.push(`Flow must be one of: ${validFlow.join(', ')}`);
-    
-    }
-
-    const validCramps = ['none', 'mild', 'moderate', 'severe'];
-    if (data.cramps && !validCramps.includes(data.cramps)) {
-        errors.push(`Cramps must be one of: ${validCramps.join(', ')}`);
-    }
-
-    const validMood = ['happy', 'neutral', 'sad', 'anxious' ,'irritable', ];
-    if (data.mood && !validMood.includes(data.mood)) {
-        errors.push(`Mood must be one of: ${validMood.join(', ')}`);
-    }
-
-    return errors;
-}
-
-
-router.get('/', (req, res) => {
+/* ============================================================
+   GET /cycles
+   Returns all cycles, newest first.
+   ============================================================ */
+router.get('/', async (req, res) => {
+  try {
+    /* .find({}) → find ALL documents (empty filter = no conditions)
+       .sort({ startDate: -1 }) → newest first (-1 = descending)   */
+    const cycles = await Cycle.find({}).sort({ startDate: -1 });
  
-  // Sort cycles newest first before returning
-  const sorted = [...cycles].sort(
-    (a, b) => new Date(b.startDate) - new Date(a.startDate)
-  );
- 
-  // Send back all cycles + a count
-  res.status(200).json({
-    success: true,
-    count:   sorted.length,
-    cycles:  sorted
-  });
- 
-});
-
-router.get('/latest', (req, res) => {
- 
-  if (cycles.length === 0) {
-    // No cycles logged yet — send 404
-    return res.status(404).json({
-      success: false,
-      message: 'No cycles logged yet'
-    });
-  }
- 
-  // Sort by startDate and pick the most recent one
-  const sorted = [...cycles].sort(
-    (a, b) => new Date(b.startDate) - new Date(a.startDate)
-  );
- 
-  res.status(200).json({
-    success: true,
-    cycle:   sorted[0]
-  });
- 
-});
- 
-
-router.get('/:id', (req, res) => {
- 
-  // req.params.id comes in as a string ("3"), so we
-  // convert it to a number with parseInt for comparison
-  const id    = parseInt(req.params.id);
-  const cycle = cycles.find(c => c.id === id);
- 
-  if (!cycle) {
-    // Cycle with that ID doesn't exist
-    return res.status(404).json({
-      success: false,
-      message: `No cycle found with id ${id}`
-    });
-  }
- 
-  res.status(200).json({
-    success: true,
-    cycle:   cycle
-  });
- 
-});
-
-
-router.post('/', (req, res) => {
-
-    const { startDate, endDate, flow, cramps, mood, notes } = req.body;
-    const errors = validateCycle(req.body);
- 
-  if (errors.length > 0) {
-    return res.status(400).json({
-      success: false,
-      message: 'Validation failed',
-      errors:  errors   // send back exactly what was wrong
-    });
-  }
-    const existingIndex = cycles.findIndex(c => c.startDate === startDate);
- 
-  if (existingIndex >= 0) {
-    // Update the existing entry
-    cycles[existingIndex] = {
-      ...cycles[existingIndex],  // keep existing fields (like id)
-      startDate,
-      endDate:  endDate  || null,
-      flow:     flow     || null,
-      cramps:   cramps   || null,
-      mood:     mood     || null,
-      notes:    notes    || ''
-    };
- 
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
-      message: 'Cycle updated',
-      cycle:   cycles[existingIndex]
+      count:   cycles.length,
+      cycles:  cycles
+    });
+ 
+  } catch (error) {
+    /* If anything goes wrong with the database query,
+       catch it here and return a 500 (server error)              */
+    console.error('GET /cycles error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch cycles',
+      error:   error.message
     });
   }
-  const newCycle = {
-    id:        nextId++,
-    startDate,
-    endDate:   endDate  || null,
-    flow:      flow     || null,
-    cramps:    cramps   || null,
-    mood:      mood     || null,
-    notes:     notes    || '',
-    createdAt: new Date().toISOString()  // timestamp of when it was logged
-  };
- 
-  /* ── Step E: Save it and respond ──────────────────────────
-     Push it into our cycles array, then send back
-     status 201 (Created) with the new cycle object.
-  ────────────────────────────────────────────────────────── */
-  cycles.push(newCycle);
- 
-  res.status(201).json({
-    success: true,
-    message: 'Cycle logged successfully',
-    cycle:   newCycle
-  });
- 
 });
  
  
 /* ============================================================
-   ENDPOINT 5: DELETE /cycles/:id
-   
-   What it does: Removes a cycle entry by ID.
-   Status code: 200 → success with confirmation message
+   GET /cycles/latest
+   Returns only the most recent cycle.
+   Used by the dashboard for predictions.
+ 
+   IMPORTANT: This route must be ABOVE /:id below.
+   Otherwise Express would treat "latest" as an ID.
    ============================================================ */
-router.delete('/:id', (req, res) => {
+router.get('/latest', async (req, res) => {
+  try {
+    /* .findOne() returns a single document.
+       .sort({ startDate: -1 }) gets the newest one.             */
+    const cycle = await Cycle.findOne({}).sort({ startDate: -1 });
  
-  const id    = parseInt(req.params.id);
-  const index = cycles.findIndex(c => c.id === id);
+    if (!cycle) {
+      return res.status(404).json({
+        success: false,
+        message: 'No cycles logged yet'
+      });
+    }
  
-  if (index === -1) {
-    return res.status(404).json({
+    res.status(200).json({
+      success: true,
+      cycle:   cycle
+    });
+ 
+  } catch (error) {
+    console.error('GET /cycles/latest error:', error.message);
+    res.status(500).json({
       success: false,
-      message: `No cycle found with id ${id}`
+      message: 'Failed to fetch latest cycle',
+      error:   error.message
     });
   }
- 
-  // Remove 1 item at position 'index'
-  const deleted = cycles.splice(index, 1)[0];
- 
-  res.status(200).json({
-    success: true,
-    message: `Cycle ${id} deleted`,
-    cycle:   deleted
-  });
- 
 });
  
  
-/* ── Export the router ───────────────────────────────────────
-   This makes the router available to server.js.
-   Without this line, server.js can't use it.
-────────────────────────────────────────────────────────────── */
+/* ============================================================
+   GET /cycles/:id
+   Returns one specific cycle by its MongoDB ID.
+   ============================================================ */
+router.get('/:id', async (req, res) => {
+  try {
+    /* MongoDB IDs look like: 664f3b2a1c4e5d6f7a8b9c0d
+       findById() handles the lookup automatically.              */
+    const cycle = await Cycle.findById(req.params.id);
+ 
+    if (!cycle) {
+      return res.status(404).json({
+        success: false,
+        message: `No cycle found with id ${req.params.id}`
+      });
+    }
+ 
+    res.status(200).json({ success: true, cycle });
+ 
+  } catch (error) {
+    console.error('GET /cycles/:id error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch cycle',
+      error:   error.message
+    });
+  }
+});
+ 
+ 
+/* ============================================================
+   POST /cycles
+   Saves a new cycle to MongoDB.
+ 
+   Mongoose validates the data against the schema automatically
+   before saving — so we don't need our manual validateCycle()
+   function from Project 2 anymore. The schema does it for us.
+   ============================================================ */
+router.post('/', async (req, res) => {
+  try {
+    const { startDate, endDate, flow, cramps, mood, notes } = req.body;
+ 
+    /* Basic check — startDate is required */
+    if (!startDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'startDate is required'
+      });
+    }
+ 
+    /* Check if a cycle with this start date already exists.
+       If so, update it rather than creating a duplicate.        */
+    const existing = await Cycle.findOne({ startDate });
+ 
+    if (existing) {
+      /* Update the existing document.
+         { new: true } means return the UPDATED document,
+         not the old one.                                        */
+      existing.endDate = endDate || null;
+      existing.flow    = flow    || null;
+      existing.cramps  = cramps  || null;
+      existing.mood    = mood    || null;
+      existing.notes   = notes   || '';
+      await existing.save();
+ 
+      return res.status(200).json({
+        success: true,
+        message: 'Cycle updated',
+        cycle:   existing
+      });
+    }
+ 
+    /* Create and save a brand new cycle document.
+       Mongoose validates it against the schema first.
+       If validation fails, it throws an error caught below.     */
+    const newCycle = await Cycle.create({
+      startDate,
+      endDate: endDate || null,
+      flow:    flow    || null,
+      cramps:  cramps  || null,
+      mood:    mood    || null,
+      notes:   notes   || ''
+    });
+ 
+    /* 201 = Created — a new resource was successfully made      */
+    res.status(201).json({
+      success: true,
+      message: 'Cycle logged successfully',
+      cycle:   newCycle
+    });
+ 
+  } catch (error) {
+    /* Mongoose validation errors have a specific structure.
+       We check for them and return clear messages.              */
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors:  messages
+      });
+    }
+ 
+    console.error('POST /cycles error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save cycle',
+      error:   error.message
+    });
+  }
+});
+ 
+ 
+/* ============================================================
+   DELETE /cycles/:id
+   Removes a cycle by its MongoDB ID.
+   ============================================================ */
+router.delete('/:id', async (req, res) => {
+  try {
+    const deleted = await Cycle.findByIdAndDelete(req.params.id);
+ 
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: `No cycle found with id ${req.params.id}`
+      });
+    }
+ 
+    res.status(200).json({
+      success: true,
+      message: 'Cycle deleted',
+      cycle:   deleted
+    });
+ 
+  } catch (error) {
+    console.error('DELETE /cycles/:id error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete cycle',
+      error:   error.message
+    });
+  }
+});
+ 
+ 
 module.exports = router;
